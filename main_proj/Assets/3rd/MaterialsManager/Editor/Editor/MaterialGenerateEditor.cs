@@ -26,24 +26,66 @@ namespace MyEditor.MaterialSystem
             var gen = (MaterialGenerate)target;
             serializedObject.Update();
 
-            DrawConfigSelector(gen);
-            DrawMaterialField(gen);
-            DrawConfigInspector(gen);
+            DrawHeader(gen);
 
-            EditorGUILayout.Space();
-            DrawGenerateButton(gen);
+            EditorGUILayout.Space(4);
+            DrawConfigSection(gen);
 
-            EditorGUILayout.Space();
-            DrawSyncNameButton(gen);
+            EditorGUILayout.Space(6);
+            DrawMaterialSection(gen);
+
+            EditorGUILayout.Space(6);
+            DrawActionsSection(gen);
 
             serializedObject.ApplyModifiedProperties();
         }
 
+        private void DrawHeader(MaterialGenerate gen)
+        {
+            EditorGUILayout.BeginVertical("box");
+            EditorGUILayout.LabelField("材质生成器", EditorStyles.boldLabel);
+            string status = gen.targetMaterial != null ? "就绪" : "缺少材质";
+            EditorGUILayout.LabelField($"状态: {status}", EditorStyles.miniLabel);
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawConfigSection(MaterialGenerate gen)
+        {
+            EditorGUILayout.BeginVertical("box");
+            EditorGUILayout.LabelField("配置", EditorStyles.boldLabel);
+            DrawConfigSelector(gen);
+            DrawConfigInspector(gen);
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawMaterialSection(MaterialGenerate gen)
+        {
+            EditorGUILayout.BeginVertical("box");
+            EditorGUILayout.LabelField("材质", EditorStyles.boldLabel);
+            DrawMaterialField(gen);
+            EditorGUILayout.EndVertical();
+        }
+
+        private void DrawActionsSection(MaterialGenerate gen)
+        {
+            EditorGUILayout.BeginVertical("box");
+            EditorGUILayout.LabelField("操作", EditorStyles.boldLabel);
+            DrawGenerateButton(gen);
+            DrawSyncNameButton(gen);
+            EditorGUILayout.EndVertical();
+        }
+
         /// <summary>
-        /// 绘制配置类型下拉选择器
+        /// 绘制配置类型下拉选择框
         /// </summary>
         private void DrawConfigSelector(MaterialGenerate gen)
         {
+            if (_typeList == null || _typeList.Count == 0)
+            {
+                EditorGUILayout.HelpBox("未找到任何 MaterialConfig 类型", MessageType.Warning);
+                return;
+            }
+
             int curIndex = gen.config != null
                 ? _typeList.FindIndex(t => t == gen.config.GetType())
                 : -1;
@@ -61,11 +103,9 @@ namespace MyEditor.MaterialSystem
         /// </summary>
         private void SwitchConfigType(MaterialGenerate gen, int newIndex)
         {
-            // 销毁旧配置
             if (gen.config != null)
                 DestroyImmediate(gen.config, true);
 
-            // 创建新配置
             if (newIndex >= 0)
             {
                 var newConfig = ScriptableObject.CreateInstance(_typeList[newIndex]) as MaterialConfig;
@@ -76,7 +116,6 @@ namespace MyEditor.MaterialSystem
                 AssetDatabase.SaveAssets();
             }
 
-            // 清理嵌套 Inspector
             if (configEditor != null)
             {
                 DestroyImmediate(configEditor);
@@ -96,6 +135,10 @@ namespace MyEditor.MaterialSystem
             if (gen.targetMaterial == null)
             {
                 EditorGUILayout.HelpBox("点击下方按钮自动创建材质球", MessageType.Info);
+            }
+            else
+            {
+                EditorGUILayout.LabelField($"自动创建: {gen.isAutoCreatedMaterial}", EditorStyles.miniLabel);
             }
         }
 
@@ -127,7 +170,7 @@ namespace MyEditor.MaterialSystem
                     DestroyImmediate(configEditor);
                     configEditor = null;
                 }
-                EditorGUILayout.HelpBox("请先选择材质类型。", MessageType.Info);
+                EditorGUILayout.HelpBox("请先选择材质类型", MessageType.Info);
             }
         }
 

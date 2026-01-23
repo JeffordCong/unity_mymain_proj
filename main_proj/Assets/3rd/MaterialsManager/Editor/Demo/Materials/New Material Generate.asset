@@ -12,9 +12,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 527b6a5b3daa96b4dbab5f363fb24ff8, type: 3}
   m_Name: config
   m_EditorClassIdentifier: 
-  baseMap: {fileID: 0}
-  normalMap: {fileID: 0}
-  mixMap: {fileID: 0}
+  baseMap: {fileID: 10300, guid: 0000000000000000f000000000000000, type: 0}
+  normalMap: {fileID: 2800000, guid: bf921d5c4d3033342acddd720c7045e0, type: 3}
+  mixMap: {fileID: 2800000, guid: bfc60422015ccb844b90b5594cc3400f, type: 3}
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
