@@ -1,5 +1,5 @@
 
-Shader "URP/PlanarReflections"
+Shader "Hidden/Temp/PlanarReflectionManager"
 {
     Properties
     {

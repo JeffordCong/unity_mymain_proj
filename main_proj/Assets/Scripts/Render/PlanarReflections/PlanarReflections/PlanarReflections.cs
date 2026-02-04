@@ -4,7 +4,7 @@ using UnityEngine.Serialization;
 using UnityEngine.Experimental.Rendering;
 using Object = UnityEngine.Object;
 
-[ExecuteAlways]
+// [ExecuteAlways]
 public class PlanarReflections : MonoBehaviour
 {
     [System.Serializable]
@@ -17,39 +17,74 @@ public class PlanarReflections : MonoBehaviour
     }
 
     [System.Serializable]
+    public enum BlurDownsample
+    {
+        None = 1,
+        Half = 2,
+        Quarter = 4
+    }
+
+    [System.Serializable]
     public class PlanarReflectionSettings
     {
+        [Header("Reflection")]
+        [Tooltip("Render scale multiplier for the reflection texture.")]
         public ResolutionMulltiplier m_ResolutionMultiplier = ResolutionMulltiplier.Third;
+        [Tooltip("Offset applied to the reflection clip plane to reduce artifacts.")]
         public float m_ClipPlaneOffset = 0.07f;
+        [Tooltip("Layers that are rendered into the reflection.")]
         public LayerMask m_ReflectLayers = -1;
+        [Tooltip("Render shadows in the reflection camera.")]
         public bool m_shadows;
-        //模糊效果相关参数
+
+        [Header("Performance")]
+        [Tooltip("Render once every N frames. 1 = every frame.")]
+        [Min(1)]
+        public int _frameInterval = 1;
+        [Tooltip("Skip rendering when the camera is static.")]
+        public bool _skipWhenCameraStatic = true;
+        [Tooltip("World-space movement threshold to detect camera motion.")]
+        [Range(0.0f, 1.0f)]
+        public float _cameraMoveThreshold = 0.01f;
+        [Tooltip("Rotation threshold (degrees) to detect camera motion.")]
+        [Range(0.0f, 5.0f)]
+        public float _cameraRotateThreshold = 0.1f;
+
+        [Header("模糊")]
         public bool _blurOn = true;
+
         [Range(0.0f, 5.0f)]
         public float _blurSize = 0;
+
         [Range(0, 10)]
         public int _blurIterations = 4;
-        [Range(1.0f, 4.0f)]
-        public float _downsample = 1;
+
+        public BlurDownsample _downsample = BlurDownsample.Half;
     }
 
 
     [SerializeField]
     public PlanarReflectionSettings m_settings = new PlanarReflectionSettings();
 
-    public GameObject target;
     [FormerlySerializedAs("camOffset")] public float m_planeOffset;
 
     private static Camera m_ReflectionCamera;
     private Vector2Int m_TextureSize = new Vector2Int(256, 128);
     private RenderTexture m_ReflectionTexture = null;
     private RenderTexture m_BlurReflectionTexture = null;
-    private int planarReflectionTextureID = Shader.PropertyToID("_PlanarReflectionTexture");
+    private static readonly int planarReflectionTextureID = Shader.PropertyToID("_PlanarReflectionTexture");
+    private static readonly int blurOffsetID = Shader.PropertyToID("_BlurOffset");
+    private static readonly int tempBlur1ID = Shader.PropertyToID("_Temp1");
+    private static readonly int tempBlur2ID = Shader.PropertyToID("_Temp2");
 
     private ResolutionMulltiplier m_OldRes;
     //模糊shader
     const string k_BlurShader = "Hidden/KawaseBlur";
     private Material _blurMaterial;
+    private bool m_BlurShaderMissingLogged;
+    private Vector3 m_LastCameraPosition;
+    private Quaternion m_LastCameraRotation;
+    private bool m_HasLastCameraPose;
 
     private void Awake()
     {
@@ -118,13 +153,8 @@ public class PlanarReflections : MonoBehaviour
             m_ReflectionCamera = CreateMirrorObjects(realCamera);
 
         // find out the reflection plane: position and normal in world space
-        Vector3 pos = Vector3.zero;
-        Vector3 normal = Vector3.up;
-        if (target != null)
-        {
-            pos = target.transform.position + Vector3.up * m_planeOffset;
-            normal = target.transform.up;
-        }
+        Vector3 normal = transform.up;
+        Vector3 pos = transform.position + normal * m_planeOffset;
 
         UpdateCamera(realCamera, m_ReflectionCamera);
 
@@ -134,21 +164,19 @@ public class PlanarReflections : MonoBehaviour
         Vector4 reflectionPlane = new Vector4(normal.x, normal.y, normal.z, d);
 
         Matrix4x4 reflection = Matrix4x4.identity;
-        reflection *= Matrix4x4.Scale(new Vector3(1, -1, 1));
-
         CalculateReflectionMatrix(ref reflection, reflectionPlane);
-        Vector3 oldpos = realCamera.transform.position - new Vector3(0, pos.y * 2, 0);
-        Vector3 newpos = ReflectPosition(oldpos);
-        m_ReflectionCamera.transform.forward = Vector3.Scale(realCamera.transform.forward, new Vector3(1, -1, 1));
+        Vector3 newpos = reflection.MultiplyPoint(realCamera.transform.position);
+        Vector3 newForward = reflection.MultiplyVector(realCamera.transform.forward);
+        Vector3 newUp = reflection.MultiplyVector(realCamera.transform.up);
+        m_ReflectionCamera.transform.SetPositionAndRotation(newpos, Quaternion.LookRotation(newForward, newUp));
         m_ReflectionCamera.worldToCameraMatrix = realCamera.worldToCameraMatrix * reflection;
 
         // Setup oblique projection matrix so that near plane is our reflection
         // plane. This way we clip everything below/above it for free.
-        Vector4 clipPlane = CameraSpacePlane(m_ReflectionCamera, pos - Vector3.up * 0.1f, normal, 1.0f);
+        Vector4 clipPlane = CameraSpacePlane(m_ReflectionCamera, pos - normal * 0.1f, normal, 1.0f);
         Matrix4x4 projection = realCamera.CalculateObliqueMatrix(clipPlane);
         m_ReflectionCamera.projectionMatrix = projection;
         m_ReflectionCamera.cullingMask = m_settings.m_ReflectLayers; // never render water layer
-        m_ReflectionCamera.transform.position = newpos;
     }
 
     // Calculates reflection matrix around the given plane
@@ -175,12 +203,6 @@ public class PlanarReflections : MonoBehaviour
         reflectionMat.m33 = 1F;
     }
 
-    private static Vector3 ReflectPosition(Vector3 pos)
-    {
-        Vector3 newPos = new Vector3(pos.x, -pos.y, pos.z);
-        return newPos;
-    }
-
     private float GetScaleValue()
     {
         switch (m_settings.m_ResolutionMultiplier)
@@ -195,6 +217,30 @@ public class PlanarReflections : MonoBehaviour
                 return 0.25f;
         }
         return 0.5f; // default to half res
+    }
+
+    private bool HasCameraMoved(Camera camera)
+    {
+        if (!m_HasLastCameraPose)
+            return true;
+
+        float moveThreshold = Mathf.Max(0.0f, m_settings._cameraMoveThreshold);
+        float rotateThreshold = Mathf.Max(0.0f, m_settings._cameraRotateThreshold);
+
+        if ((camera.transform.position - m_LastCameraPosition).sqrMagnitude > moveThreshold * moveThreshold)
+            return true;
+
+        if (Quaternion.Angle(camera.transform.rotation, m_LastCameraRotation) > rotateThreshold)
+            return true;
+
+        return false;
+    }
+
+    private void CacheCameraPose(Camera camera)
+    {
+        m_LastCameraPosition = camera.transform.position;
+        m_LastCameraRotation = camera.transform.rotation;
+        m_HasLastCameraPose = true;
     }
 
     // Compare two int2
@@ -216,6 +262,7 @@ public class PlanarReflections : MonoBehaviour
         return new Vector4(cnormal.x, cnormal.y, cnormal.z, -Vector3.Dot(cpos, cnormal));
     }
 
+    // 创建镜像相机
     private Camera CreateMirrorObjects(Camera currentCamera)
     {
         GameObject go =
@@ -224,13 +271,13 @@ public class PlanarReflections : MonoBehaviour
         UnityEngine.Rendering.Universal.UniversalAdditionalCameraData lwrpCamData =
             go.AddComponent(typeof(UnityEngine.Rendering.Universal.UniversalAdditionalCameraData)) as UnityEngine.Rendering.Universal.UniversalAdditionalCameraData;
         UnityEngine.Rendering.Universal.UniversalAdditionalCameraData lwrpCamDataCurrent = currentCamera.GetComponent<UnityEngine.Rendering.Universal.UniversalAdditionalCameraData>();
-        lwrpCamData.renderShadows = m_settings.m_shadows; // turn off shadows for the reflection camera
+        lwrpCamData.renderShadows = false; // turn off shadows for the reflection camera
         lwrpCamData.requiresColorOption = UnityEngine.Rendering.Universal.CameraOverrideOption.Off;
         lwrpCamData.requiresDepthOption = UnityEngine.Rendering.Universal.CameraOverrideOption.Off;
         var reflectionCamera = go.GetComponent<Camera>();
         reflectionCamera.transform.SetPositionAndRotation(transform.position, transform.rotation);
         //reflectionCamera.targetTexture = m_ReflectionTexture;
-        reflectionCamera.allowMSAA = currentCamera.allowMSAA;
+        reflectionCamera.allowMSAA = false;
         reflectionCamera.depth = -10;
         reflectionCamera.enabled = false;
         reflectionCamera.allowHDR = currentCamera.allowHDR;
@@ -251,17 +298,52 @@ public class PlanarReflections : MonoBehaviour
 
         if (!enabled)
             return;
-        if (_blurMaterial == null)
+        if (camera == null || camera.cameraType == CameraType.Reflection || camera.cameraType == CameraType.Preview)
+            return;
+        // 只对主相机渲染反射
+        if (!camera.CompareTag("MainCamera"))
+            return;
+        if (camera.pixelWidth <= 0 || camera.pixelHeight <= 0)
+            return;
+#if UNITY_EDITOR
+        if (camera.cameraType == CameraType.SceneView)
+            return;
+#endif
+        if (m_ReflectionCamera != null && camera == m_ReflectionCamera)
+            return;
+
+        bool cameraMoved = HasCameraMoved(camera);
+        if (m_settings._frameInterval > 1)
+        {
+            if (!cameraMoved && (Time.frameCount % m_settings._frameInterval != 0))
+                return;
+        }
+        else if (m_settings._skipWhenCameraStatic && !cameraMoved)
+        {
+            return;
+        }
+
+        bool blurEnabled = m_settings._blurOn;
+        if (blurEnabled && _blurMaterial == null)
         {
             var blurShader = Shader.Find(k_BlurShader);
             if (blurShader == null)
             {
-                Debug.LogError("Reflection Not Find Blur Shader");
+                if (!m_BlurShaderMissingLogged)
+                {
+                    Debug.LogError("Reflection Not Find Blur Shader");
+                    m_BlurShaderMissingLogged = true;
+                }
+                blurEnabled = false;
             }
-            _blurMaterial = CoreUtils.CreateEngineMaterial(blurShader);
+            else
+            {
+                _blurMaterial = CoreUtils.CreateEngineMaterial(blurShader);
+            }
         }
 
         GL.invertCulling = true;
+        var oldFog = RenderSettings.fog;
         RenderSettings.fog = false;
         var max = QualitySettings.maximumLODLevel;
         var bias = QualitySettings.lodBias;
@@ -269,17 +351,19 @@ public class PlanarReflections : MonoBehaviour
         QualitySettings.lodBias = bias * 0.5f;
 
         UpdateReflectionCamera(camera);
-        m_ReflectionCamera.cameraType = camera.cameraType;
+        m_ReflectionCamera.cameraType = CameraType.Reflection;
 
         var res = ReflectionResolution(camera, UnityEngine.Rendering.Universal.UniversalRenderPipeline.asset.renderScale);
         if (m_OldRes != m_settings.m_ResolutionMultiplier)
         {
             m_OldRes = m_settings.m_ResolutionMultiplier;
-            var tempTex = m_ReflectionTexture;
-            RenderTexture.ReleaseTemporary(tempTex);
-            m_ReflectionTexture = null;
+            if (m_ReflectionTexture != null)
+            {
+                RenderTexture.ReleaseTemporary(m_ReflectionTexture);
+                m_ReflectionTexture = null;
+            }
         }
-        if (m_ReflectionTexture == null)
+        if (m_ReflectionTexture == null || !Int2Compare(m_TextureSize, res))
         {
             bool useHDR10 = SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RGB111110Float);
             RenderTextureFormat hdrFormat =
@@ -289,6 +373,7 @@ public class PlanarReflections : MonoBehaviour
             m_ReflectionTexture.useMipMap = true;
             m_ReflectionTexture.autoGenerateMips = true;
             m_ReflectionTexture.name = "_PlanarReflectionTexture";
+            m_TextureSize = res;
         }
 
         m_ReflectionCamera.targetTexture = m_ReflectionTexture;
@@ -297,40 +382,47 @@ public class PlanarReflections : MonoBehaviour
             UnityEngine.Rendering.Universal.UniversalRenderPipeline.RenderSingleCamera(context, m_ReflectionCamera);
 
         GL.invertCulling = false;
-        RenderSettings.fog = true;
+        RenderSettings.fog = oldFog;
         QualitySettings.maximumLODLevel = max;
         QualitySettings.lodBias = bias;
 
+        Debug.LogError($"[PlanarReflections] 反射纹理已生成 - Camera: {camera.name}, Size: {m_ReflectionTexture.width}x{m_ReflectionTexture.height}, Frame: {Time.frameCount}");
+
         //模糊
-        if (m_settings._blurOn)
+        if (blurEnabled && _blurMaterial != null)
         {
             var sourceDesc = m_ReflectionTexture.descriptor;
             sourceDesc.msaaSamples = 1;
             sourceDesc.depthBufferBits = 0;
             var sourceID = new RenderTargetIdentifier(m_ReflectionTexture);
-            if (m_BlurReflectionTexture == null)
+            if (m_BlurReflectionTexture == null ||
+                m_BlurReflectionTexture.width != sourceDesc.width ||
+                m_BlurReflectionTexture.height != sourceDesc.height ||
+                m_BlurReflectionTexture.graphicsFormat != sourceDesc.graphicsFormat)
             {
+                if (m_BlurReflectionTexture != null)
+                    RenderTexture.ReleaseTemporary(m_BlurReflectionTexture);
                 m_BlurReflectionTexture = RenderTexture.GetTemporary(sourceDesc);
                 m_BlurReflectionTexture.name = "Blur ReflectionTex";
             }
             var buf = CommandBufferPool.Get("Blur Reflection");
             float width = sourceDesc.width;
             float height = sourceDesc.height;
-            sourceDesc.width = Mathf.RoundToInt(width / m_settings._downsample);
-            sourceDesc.height = Mathf.RoundToInt(height / m_settings._downsample);
+            sourceDesc.width = Mathf.RoundToInt(width / (int)m_settings._downsample);
+            sourceDesc.height = Mathf.RoundToInt(height / (int)m_settings._downsample);
 
-            int blurredID = Shader.PropertyToID("_Temp1");
-            int blurredID2 = Shader.PropertyToID("_Temp2");
+            int blurredID = tempBlur1ID;
+            int blurredID2 = tempBlur2ID;
             buf.GetTemporaryRT(blurredID, sourceDesc);
             buf.GetTemporaryRT(blurredID2, sourceDesc);
 
-            buf.SetGlobalFloat("_BlurOffset", 1.0f + m_settings._blurSize);
+            buf.SetGlobalFloat(blurOffsetID, 1.0f + m_settings._blurSize);
             buf.Blit(sourceID, blurredID, _blurMaterial, 0);
 
             for (int i = 1; i < m_settings._blurIterations; i++)
             {
                 float iterationOffs = (i * 1.0f);
-                buf.SetGlobalFloat("_BlurOffset", iterationOffs + m_settings._blurSize);
+                buf.SetGlobalFloat(blurOffsetID, iterationOffs + m_settings._blurSize);
                 buf.Blit(blurredID, blurredID2, _blurMaterial, 0);
 
                 // pingpong
@@ -339,7 +431,7 @@ public class PlanarReflections : MonoBehaviour
                 blurredID2 = rttmp;
             }
 
-            buf.SetGlobalFloat("_BlurOffset", m_settings._blurIterations + m_settings._blurSize);
+            buf.SetGlobalFloat(blurOffsetID, m_settings._blurIterations + m_settings._blurSize);
             buf.Blit(blurredID, m_BlurReflectionTexture, _blurMaterial, 0);
 
             Shader.SetGlobalTexture(planarReflectionTextureID, m_BlurReflectionTexture);
@@ -353,5 +445,7 @@ public class PlanarReflections : MonoBehaviour
         {
             Shader.SetGlobalTexture(planarReflectionTextureID, m_ReflectionTexture);
         }
+
+        CacheCameraPose(camera);
     }
 }
